@@ -1,0 +1,67 @@
+# Ambientes virtuais
+olist_venv/
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+.jupyter/
+
+# Dados locais e artefatos gerados
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/*
+!models/.gitkeep
+reports/figures/*
+!reports/figures/.gitkeep
+reports/powerbi/*.pbix
+reports/*.docx
+docs/*.docx
+
+
+# Arquivos temporários e logs
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Variáveis de ambiente e credenciais
+.env
+.env.*
+!.env.example
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs e ferramentas
+.vscode/
+.idea/
+*.code-workspace
+
+# Arquivos auxiliares
+_*/
