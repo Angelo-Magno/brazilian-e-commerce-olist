@@ -66,7 +66,7 @@ def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
             "feature": column,
             "dtype": dtype,
             "total_null": total_null,
-            "percent_null": round(percent_null, 2) if pd.notnull(percent_null) else np.nan,
+            "percent_null": round(percent_null, 5) if pd.notnull(percent_null) else np.nan,
             "unique": unique,
             "top": top,
             "freq": freq,
@@ -86,10 +86,7 @@ def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    # ------------------------------------------------------------------
-    # Teste rápido usando um dos CSVs do Olist (ajuste o caminho conforme
-    # a estrutura real do seu projeto: data/raw/<nome_do_arquivo>.csv)
-    # ------------------------------------------------------------------
+
     sample_path = "../data/raw/olist_orders_dataset.csv"
 
     try:

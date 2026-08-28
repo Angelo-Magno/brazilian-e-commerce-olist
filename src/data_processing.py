@@ -48,14 +48,17 @@ RAW_FILENAMES = {
 }
 
 # Colunas de data que devem ser convertidas para datetime
-ORDER_DATE_COLS = [
+DATE_COLS = [
     "order_purchase_timestamp",
     "order_approved_at",
     "order_delivered_carrier_date",
     "order_delivered_customer_date",
     "order_estimated_delivery_date",
+    "shipping_limit_date",
+    "review_creation_date",
+    "review_answer_timestamp"
 ]
-REVIEW_DATE_COLS = ["review_creation_date", "review_answer_timestamp"]
+
 
 
 # ---------------------------------------------------------------------
@@ -133,7 +136,7 @@ def merge_payments(df: pd.DataFrame, payments: pd.DataFrame) -> pd.DataFrame:
         .agg(
             payment_value_total=("payment_value", "sum"),
             payment_installments_max=("payment_installments", "max"),
-            payment_type_mode=("payment_type", lambda x: x.mode().iloc[0] if not x.mode().empty else None),
+            payment_types=("payment_type", lambda x: " | ".join(sorted(set(x))) if len(x) else "None"),
             n_payment_methods=("payment_type", "nunique"),
         )
         .reset_index()
@@ -219,7 +222,7 @@ def clean_merged_dataset(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     # Conversão de datas
-    for col in ORDER_DATE_COLS + REVIEW_DATE_COLS:
+    for col in DATE_COLS:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
