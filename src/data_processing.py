@@ -47,18 +47,113 @@ RAW_FILENAMES = {
     "category_translation": "product_category_name_translation.csv",
 }
 
-# Colunas de data que devem ser convertidas para datetime
-DATE_COLS = [
-    "order_purchase_timestamp",
-    "order_approved_at",
-    "order_delivered_carrier_date",
-    "order_delivered_customer_date",
-    "order_estimated_delivery_date",
-    "shipping_limit_date",
-    "review_creation_date",
-    "review_answer_timestamp"
-]
-
+# ---------------------------------------------------------------------
+# Esquema de tipos por tabela (aplicado direto no read_csv)
+# ---------------------------------------------------------------------
+# Regras adotadas:
+#   - Chaves (ids) e CEPs: "string". CEP como string preserva zeros à esquerda.
+#   - Colunas de baixa cardinalidade (status, tipo de pagamento, UF): "category".
+#   - Inteiros com possíveis nulos: dtype anulável ("Int16", "Int32").
+#   - Datas: listadas em "parse_dates" (nulos viram NaT, esperado em pedidos
+#     cancelados ou não entregues).
+TABLE_SCHEMAS = {
+    "customers": {
+        "dtype": {
+            "customer_id": "string",
+            "customer_unique_id": "string",
+            "customer_zip_code_prefix": "string",
+            "customer_city": "string",
+            "customer_state": "category",
+        },
+        "parse_dates": [],
+    },
+    "orders": {
+        "dtype": {
+            "order_id": "string",
+            "customer_id": "string",
+            "order_status": "category",
+        },
+        "parse_dates": [
+            "order_purchase_timestamp",
+            "order_approved_at",
+            "order_delivered_carrier_date",
+            "order_delivered_customer_date",
+            "order_estimated_delivery_date",
+        ],
+    },
+    "order_items": {
+        "dtype": {
+            "order_id": "string",
+            "order_item_id": "Int16",
+            "product_id": "string",
+            "seller_id": "string",
+            "price": "float64",
+            "freight_value": "float64",
+        },
+        "parse_dates": ["shipping_limit_date"],
+    },
+    "payments": {
+        "dtype": {
+            "order_id": "string",
+            "payment_sequential": "Int8",
+            "payment_type": "category",
+            "payment_installments": "Int8",
+            "payment_value": "float64",
+        },
+        "parse_dates": [],
+    },
+    "reviews": {
+        "dtype": {
+            "review_id": "string",
+            "order_id": "string",
+            "review_score": "Int8",
+            "review_comment_title": "string",
+            "review_comment_message": "string",
+        },
+        "parse_dates": ["review_creation_date", "review_answer_timestamp"],
+    },
+    "products": {
+        "dtype": {
+            "product_id": "string",
+            "product_category_name": "string",
+            # Os nomes abaixo mantêm a grafia original do dataset ("lenght")
+            "product_name_lenght": "Int16",
+            "product_description_lenght": "Int32",
+            "product_photos_qty": "Int16",
+            "product_weight_g": "Int32",
+            "product_length_cm": "Int32",
+            "product_height_cm": "Int32",
+            "product_width_cm": "Int32",
+        },
+        "parse_dates": [],
+    },
+    "sellers": {
+        "dtype": {
+            "seller_id": "string",
+            "seller_zip_code_prefix": "string",
+            "seller_city": "string",
+            "seller_state": "category",
+        },
+        "parse_dates": [],
+    },
+    "geolocation": {
+        "dtype": {
+            "geolocation_zip_code_prefix": "string",
+            "geolocation_lat": "float64",
+            "geolocation_lng": "float64",
+            "geolocation_city": "string",
+            "geolocation_state": "category",
+        },
+        "parse_dates": [],
+    },
+    "category_translation": {
+        "dtype": {
+            "product_category_name": "string",
+            "product_category_name_english": "string",
+        },
+        "parse_dates": [],
+    },
+}
 
 
 # ---------------------------------------------------------------------
@@ -66,7 +161,11 @@ DATE_COLS = [
 # ---------------------------------------------------------------------
 def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
     """
-    Carrega os 9 CSVs originais do Olist em um dicionário de DataFrames.
+    Carrega os 9 CSVs originais do Olist em um dicionário de DataFrames,
+    já com os tipos corretos (dtype e parse_dates definidos em TABLE_SCHEMAS).
+
+    Se alguma coluna não puder ser convertida, o erro aparece aqui, na carga,
+    e não depois dos merges.
 
     Retorna:
         dict com chaves: 'customers', 'orders', 'order_items', 'payments',
@@ -77,8 +176,13 @@ def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
         filepath = raw_path / filename
         if not filepath.exists():
             raise FileNotFoundError(f"Arquivo não encontrado: {filepath}")
+        schema = TABLE_SCHEMAS[key]
         logger.info(f"Carregando {key} de {filepath}")
-        tables[key] = pd.read_csv(filepath)
+        tables[key] = pd.read_csv(
+            filepath,
+            dtype=schema["dtype"],
+            parse_dates=schema["parse_dates"],
+        )
     return tables
 
 
@@ -136,11 +240,20 @@ def merge_payments(df: pd.DataFrame, payments: pd.DataFrame) -> pd.DataFrame:
         .agg(
             payment_value_total=("payment_value", "sum"),
             payment_installments_max=("payment_installments", "max"),
-            payment_types=("payment_type", lambda x: " | ".join(sorted(set(x))) if len(x) else "None"),
+            payment_types=("payment_type", lambda x: " | ".join(sorted(set(x.dropna()))) or pd.NA),
             n_payment_methods=("payment_type", "nunique"),
         )
-        .reset_index()
+    .reset_index()
+    .astype(
+        {
+            "payment_value_total": "float64",
+            "payment_installments_max": "Int8",
+            "payment_types": "string",
+            "n_payment_methods": "Int8",
+        }
     )
+)
+    
     df = df.merge(payments_agg, on="order_id", how="left", validate="m:1")
     logger.info(f"+ payments (agregado) -> {df.shape}")
     return df
@@ -212,19 +325,13 @@ def build_merged_dataset(tables: dict[str, pd.DataFrame], include_geolocation: b
 
 
 # ---------------------------------------------------------------------
-# 4. Limpeza / tratamentos pós-merge (duplicatas, tipos, nulos)
+# 4. Limpeza / tratamentos pós-merge (duplicatas, nulos)
 # ---------------------------------------------------------------------
 def clean_merged_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Trata duplicatas geradas pelos merges, converte tipos de data,
-    remove duplicatas exatas e reporta nulos por coluna.
+    Remove duplicatas exatas geradas pelos merges e reporta nulos por coluna.
     """
     df = df.copy()
-
-    # Conversão de datas
-    for col in DATE_COLS:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
 
     # Remove duplicatas exatas (linha inteira repetida)
     before = len(df)
