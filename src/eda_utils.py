@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -33,9 +34,10 @@ def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
         percent_null = (total_null / n_rows) * 100 if n_rows > 0 else np.nan
 
         unique = series.nunique(dropna=True)
+        count = series.count()
 
         # top e freq (valor mais frequente)
-        value_counts = series.value_counts(dropna=True)
+        value_counts = series.value_counts(dropna=True, ascending=False)
         if not value_counts.empty:
             top = value_counts.index[0]
             freq = value_counts.iloc[0]
@@ -66,8 +68,9 @@ def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
             "feature": column,
             "dtype": dtype,
             "total_null": total_null,
-            "percent_null": round(percent_null, 5) if pd.notnull(percent_null) else np.nan,
+            "percent_null": round(percent_null, 6) if pd.notnull(percent_null) else np.nan,
             "unique": unique,
+            "count": count,
             "top": top,
             "freq": freq,
             "mean": mean,
@@ -83,6 +86,134 @@ def dataframe_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     summary_df = pd.DataFrame(results).sort_values(by=["feature"]).set_index("feature")
     return summary_df
+
+
+def show_multi_item_orders(
+    df: pd.DataFrame,
+    order_id_col: str = "order_id",
+    required_cols: list[str] = ["order_id", "price", "freight_value", "payment_value_total"]
+) -> pd.DataFrame:
+    """
+    Exibe pedidos com mais de um item, agrupando linhas do mesmo order_id
+    lado a lado para facilitar a inspeção visual.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame no grão de item do pedido, contendo as colunas
+        'order_id', 'price', 'freight_value', 'payment_value'
+        e 'payment_value_total'.
+    order_id_col : str, default 'order_id'
+        Nome da coluna identificadora do pedido.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subconjunto do df original, filtrado para pedidos com mais
+        de um item e ordenado por order_id (linhas do mesmo pedido
+        ficam contíguas).
+    """
+
+    # valida se todas as colunas necessárias existem no df
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Colunas ausentes no DataFrame: {missing_cols}")
+
+    # conta quantos itens cada pedido possui
+    item_counts = df.groupby(order_id_col).size()
+
+    # filtra apenas os order_ids com mais de um item
+    multi_item_order_ids = item_counts[item_counts > 1].index
+
+    # filtra o df original mantendo apenas esses pedidos
+    result = df[df[order_id_col].isin(multi_item_order_ids)]
+
+    # ordena por order_id para manter itens do mesmo pedido próximos
+    result = result.sort_values(by=order_id_col).reset_index(drop=True)
+
+    return result[required_cols]
+
+
+def check_payment_consistency(
+    df: pd.DataFrame,
+    order_id_col: str = "order_id",
+    tolerance: float = 0.02,
+) -> pd.DataFrame:
+    """
+    Verifica se a soma de price + freight_value por pedido bate com
+    payment_value_total, considerando uma tolerância para arredondamentos.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame no grão de item do pedido, contendo as colunas
+        'order_id', 'price', 'freight_value' e 'payment_value_total'.
+    order_id_col : str, default 'order_id'
+        Nome da coluna identificadora do pedido.
+    tolerance : float, default 0.01
+        Diferença máxima aceitável (em valor absoluto) entre os dois
+        valores para considerar como "batendo".
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame agregado por order_id com as colunas:
+        'price_freight_sum', 'payment_value_total', 'difference'
+        e 'is_consistent' (bool).
+    """
+    required_cols = [order_id_col, "price", "freight_value", "payment_value_total", "payment_types"]
+
+    # valida se todas as colunas necessárias existem no df
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Colunas ausentes no DataFrame: {missing_cols}")
+
+    # agrega por order_id: soma de price e freight_value, "first" para payment_value_total
+    grouped = df.groupby(order_id_col).agg(
+        price_sum=("price", "sum"),
+        freight_sum=("freight_value", "sum"),
+        payment_value_total=("payment_value_total", "first"),
+        payment_types=("payment_types", "first")
+    )
+
+    # calcula a soma price + freight_value
+    grouped["price_freight_sum"] = grouped["price_sum"] + grouped["freight_sum"]
+
+    # calcula a diferença absoluta entre os dois valores
+    grouped["difference"] = np.abs(
+        grouped["price_freight_sum"] - grouped["payment_value_total"]
+    )
+
+    # flag de consistência com base na tolerância definida
+    grouped["is_consistent"] = grouped["difference"] <= tolerance
+
+    result = grouped[
+        ["payment_types", "price_freight_sum", "payment_value_total", "difference", "is_consistent"]
+    ].reset_index()
+
+    return result
+
+def save_table_as_image(df, filepath, col_width=2.0, row_height=0.5):
+    """Salva um DataFrame como imagem usando matplotlib."""
+    fig_width = col_width * len(df.columns)
+    fig_height = row_height * (len(df) + 1)
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    ax.axis("off")
+
+    table = ax.table(
+        cellText=df.values,
+        colLabels=df.columns,
+        rowLabels=df.index,
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+
+    fig.savefig(filepath, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
 
 
 if __name__ == "__main__":
