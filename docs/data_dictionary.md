@@ -49,6 +49,9 @@ Dataset relacional composto por 9 tabelas (CSVs) localizadas em `data/raw/`. Tod
 | product_length_cm | float | Comprimento em cm |
 | product_height_cm | float | Altura em cm |
 | product_width_cm | float | Largura em cm |
+| product_description_lenght| int | Número de caracteres extraidos da descrição do produto |
+| product_name_lenght | int | Número de caracteres extraidos do nome do produto |
+| product_photos_qty | int | Número de fotos publicadas do produto |
 
 ## olist_sellers_dataset.csv
 
