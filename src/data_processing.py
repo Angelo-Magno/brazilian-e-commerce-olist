@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pandas as pd
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
@@ -155,6 +157,10 @@ TABLE_SCHEMAS = {
     },
 }
 
+# Limites aproximados do território brasileiro (usados para filtrar coordenadas inválidas)
+BRAZIL_LAT_RANGE = (-33.75116944, 5.27438888)
+BRAZIL_LNG_RANGE = (-73.98283055, -34.79314722)
+
 
 # ---------------------------------------------------------------------
 # 1. Carregamento das tabelas brutas
@@ -189,7 +195,9 @@ def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
 # ---------------------------------------------------------------------
 # 2. Funções de merge (uma por relação lógica)
 # ---------------------------------------------------------------------
-def merge_orders_customers(orders: pd.DataFrame, customers: pd.DataFrame) -> pd.DataFrame:
+def merge_orders_customers(
+    orders: pd.DataFrame, customers: pd.DataFrame
+) -> pd.DataFrame:
     """Une orders + customers via customer_id (relação 1:1)."""
     df = orders.merge(customers, on="customer_id", how="left", validate="m:1")
     logger.info(f"orders + customers -> {df.shape}")
@@ -240,20 +248,25 @@ def merge_payments(df: pd.DataFrame, payments: pd.DataFrame) -> pd.DataFrame:
         .agg(
             payment_value_total=("payment_value", "sum"),
             payment_installments_max=("payment_installments", "max"),
-            payment_types=("payment_type", lambda x: " | ".join(sorted(set(x.dropna()))) or pd.NA),
+            payment_types=(
+                "payment_type",
+                lambda x: " | ".join(sorted(set(x.dropna()))) or pd.NA,
+            ),
             n_payment_methods=("payment_type", "nunique"),
+            payment_sequential_max=("payment_sequential", "max"),
         )
-    .reset_index()
-    .astype(
-        {
-            "payment_value_total": "float64",
-            "payment_installments_max": "Int8",
-            "payment_types": "string",
-            "n_payment_methods": "Int8",
-        }
+        .reset_index()
+        .astype(
+            {
+                "payment_value_total": "float64",
+                "payment_installments_max": "Int8",
+                "payment_types": "string",
+                "n_payment_methods": "Int8",
+                "payment_sequential_max": "Int8",
+            }
+        )
     )
-)
-    
+
     df = df.merge(payments_agg, on="order_id", how="left", validate="m:1")
     logger.info(f"+ payments (agregado) -> {df.shape}")
     return df
@@ -266,43 +279,86 @@ def merge_reviews(df: pd.DataFrame, reviews: pd.DataFrame) -> pd.DataFrame:
     Mantemos apenas o review mais recente (review_answer_timestamp) por
     pedido para preservar a granularidade "item do pedido" sem duplicar.
     """
-    reviews_dedup = (
-        reviews.sort_values("review_answer_timestamp")
-        .drop_duplicates(subset="order_id", keep="last")
+    reviews_dedup = reviews.sort_values("review_answer_timestamp").drop_duplicates(
+        subset="order_id", keep="last"
     )
     df = df.merge(reviews_dedup, on="order_id", how="left", validate="m:1")
     logger.info(f"+ reviews (deduplicado) -> {df.shape}")
     return df
 
 
-def merge_geolocation(df: pd.DataFrame, geolocation: pd.DataFrame) -> pd.DataFrame:
+def aggregate_geolocation(geolocation: pd.DataFrame) -> pd.DataFrame:
     """
-    Opcional: enriquece com dados geográficos via zip_code_prefix.
-    A tabela geolocation tem múltiplas lat/long por CEP (imprecisão de
-    coordenadas dentro do mesmo prefixo). Aqui agregamos por média para
-    ter uma lat/long representativa por prefixo de CEP do cliente.
+    Reduz a tabela de geolocalização a uma linha por prefixo de CEP,
+    usando a mediana das coordenadas como ponto representativo.
+    """
+    # Remove coordenadas fora do Brasil antes de agregar
+    in_brazil = geolocation["geolocation_lat"].between(*BRAZIL_LAT_RANGE) & geolocation[
+        "geolocation_lng"
+    ].between(*BRAZIL_LNG_RANGE)
+    n_invalid = (~in_brazil).sum()
+    logger.info(f"Coordenadas fora do Brasil removidas: {n_invalid}")
 
-    Não é chamada por padrão em build_merged_dataset() -- ative
-    explicitamente se for usar features geográficas.
-    """
     geo_agg = (
-        geolocation.groupby("geolocation_zip_code_prefix")
+        geolocation[in_brazil]
+        .groupby("geolocation_zip_code_prefix")
         .agg(
-            customer_lat=("geolocation_lat", "mean"),
-            customer_lng=("geolocation_lng", "mean"),
+            lat=("geolocation_lat", "median"),
+            lng=("geolocation_lng", "median"),
+            n_points=("geolocation_lat", "size"),
         )
         .reset_index()
-        .rename(columns={"geolocation_zip_code_prefix": "customer_zip_code_prefix"})
+        .astype(
+            {
+                "lat": "float64",
+                "lng": "float64",
+                "n_points": "Int32",
+            }
+        )
+        .rename(columns={"geolocation_zip_code_prefix": "zip_code_prefix"})
     )
-    df = df.merge(geo_agg, on="customer_zip_code_prefix", how="left")
-    logger.info(f"+ geolocation (agregado) -> {df.shape}")
+    logger.info(f"geolocation agregada -> {geo_agg.shape}")
+    return geo_agg
+
+
+def merge_geolocation(df: pd.DataFrame, geolocation: pd.DataFrame) -> pd.DataFrame:
+    """
+    Une as coordenadas de cliente e vendedor via prefixo de CEP.
+    Deve ser chamada depois de merge_sellers, pois depende de seller_zip_code_prefix.
+    Prefixos sem correspondência ficam com lat/lng nulos (how="left").
+    """
+    geo_agg = aggregate_geolocation(geolocation)
+
+    for role in ("customer", "seller"):
+        # Renomeia as colunas da geolocalização para evitar colisão entre os dois merges
+        geo_role = geo_agg.rename(
+            columns={
+                "zip_code_prefix": f"{role}_zip_code_prefix",
+                "lat": f"{role}_lat",
+                "lng": f"{role}_lng",
+                "n_points": f"{role}_geo_n_points",
+            }
+        )
+        df = df.merge(
+            geo_role,
+            on=f"{role}_zip_code_prefix",
+            how="left",
+            validate="m:1",
+        )
+
+        # Reporta prefixos sem cobertura para decidir o tratamento depois
+        n_missing = df[f"{role}_lat"].isna().sum()
+        logger.info(
+            f"+ geolocation ({role}) -> {df.shape} | sem coordenadas: {n_missing}"
+        )
+
     return df
 
 
 # ---------------------------------------------------------------------
 # 3. Pipeline principal de merge
 # ---------------------------------------------------------------------
-def build_merged_dataset(tables: dict[str, pd.DataFrame], include_geolocation: bool = False) -> pd.DataFrame:
+def build_merged_dataset(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Orquestra todos os merges na ordem correta e retorna o dataset unificado.
     Este é o dataset que vai para data/interim/.
@@ -316,9 +372,7 @@ def build_merged_dataset(tables: dict[str, pd.DataFrame], include_geolocation: b
     df = merge_sellers(df, tables["sellers"])
     df = merge_payments(df, tables["payments"])
     df = merge_reviews(df, tables["reviews"])
-
-    if include_geolocation:
-        df = merge_geolocation(df, tables["geolocation"])
+    df = merge_geolocation(df, tables["geolocation"])
 
     logger.info(f"Dataset final unificado: {df.shape}")
     return df
@@ -348,10 +402,96 @@ def clean_merged_dataset(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def collapse_item_level_to_order_level(df: pd.DataFrame, order_level_cols: list[str]) -> pd.DataFrame:
+    """Agrega as colunas de item para uma linha por order_id."""
+
+    # Falha explícita se alguma coluna de pedido não existir (evita typo silencioso)
+    missing = [col for col in order_level_cols if col not in df.columns]
+    if missing:
+        raise KeyError(f"Colunas de pedido ausentes no DataFrame: {missing}")
+
+    # Colunas de pedido: pegar o primeiro valor (são idênticas dentro do pedido)
+    order_aggs = {col: (col, "first") for col in order_level_cols if col in df.columns}
+
+    def mode_or_nan(s: pd.Series):
+        mode = s.mode()
+        return mode.iat[0] if not mode.empty else pd.NA
+
+    # Soma com min_count=1 para manter nulo quando todos os valores forem nulos
+    sum_or_nan = lambda s: s.sum(min_count=1)
+    string_or_nan = lambda s: " | ".join(sorted(set(s.dropna()))) or pd.NA
+
+    # Volume calculado por item ANTES da agregação (atributo físico do item)
+    df = df.assign(
+        product_volume_cm3=(
+            df["product_length_cm"] * df["product_height_cm"] * df["product_width_cm"]
+        )
+    )
+
+    item_aggs = {
+        "n_items": ("order_item_id", "count"),
+        "n_distinct_products": ("product_id", "nunique"),
+        "n_sellers": ("seller_id", "nunique"),
+        "n_seller_states": ("seller_state", "nunique"),
+        "seller_states": ("seller_state", string_or_nan),
+        "seller_cities": ("seller_city", string_or_nan),
+        "max_shipping_limit_date": ("shipping_limit_date", "max"),
+        "min_shipping_limit_date": ("shipping_limit_date", "min"),
+        "total_price": ("price", sum_or_nan),
+        "max_item_price": ("price", "max"),
+        "avg_item_price": ("price", "mean"),
+        "total_freight": ("freight_value", sum_or_nan),
+        "main_category": ("product_category_name_english", mode_or_nan),
+        "n_categories": ("product_category_name_english", "nunique"),
+        "categories": ("product_category_name_english", string_or_nan),
+        "mean_name_length": ("product_name_length", "mean"),
+        "mean_description_length": ("product_description_length", "mean"),
+        "min_photos_qty": ("product_photos_qty", "min"),
+        "total_weight_g": ("product_weight_g", sum_or_nan),
+        "max_weight_g": ("product_weight_g", "max"),
+        "total_volume_cm3": ("product_volume_cm3", sum_or_nan),
+        "max_item_volume_cm3": ("product_volume_cm3", "max"),
+        "max_seller_distance_km": ("seller_customer_distance_km", "max"),
+        "mean_seller_distance_km": ("seller_customer_distance_km", "mean"),
+        # Quantos vendedores do pedido ficaram sem coordenadas
+        "n_sellers_missing_distance": (
+            "seller_customer_distance_km",
+            lambda s: s.isna().sum(),
+        ),
+        "min_seller_geo_n_points": ("seller_geo_n_points", "min"),
+        "max_seller_geo_n_points": ("seller_geo_n_points", "max"),
+    }
+
+    df_order = (
+        df.groupby("order_id")
+        .agg(**order_aggs, **item_aggs)
+        .astype(
+            {
+                "n_categories": "Int16",
+                "n_items": "Int16",
+                "n_distinct_products": "Int16",
+                "n_sellers": "Int16",
+                "n_seller_states": "Int16",
+                "seller_states": "string",
+                "n_sellers_missing_distance": "Int16",
+                "min_seller_geo_n_points": "Int32",
+                "max_seller_geo_n_points": "Int32",
+            }
+        )
+        .reset_index()
+    )
+
+    return df_order
+
+
 # ---------------------------------------------------------------------
 # 5. Persistência
 # ---------------------------------------------------------------------
-def save_interim(df: pd.DataFrame, path: Path = INTERIM_DATA_PATH, filename: str = "olist_merged.parquet") -> None:
+def save_interim(
+    df: pd.DataFrame,
+    path: Path = INTERIM_DATA_PATH,
+    filename: str = "olist_merged.parquet",
+) -> None:
     """Salva o dataset unificado (pré-tratamento final) em data/interim/."""
     path.mkdir(parents=True, exist_ok=True)
     filepath = path / filename
@@ -359,7 +499,11 @@ def save_interim(df: pd.DataFrame, path: Path = INTERIM_DATA_PATH, filename: str
     logger.info(f"Salvo em {filepath} ({df.shape[0]} linhas, {df.shape[1]} colunas)")
 
 
-def save_processed(df: pd.DataFrame, path: Path = PROCESSED_DATA_PATH, filename: str = "olist_processed.parquet") -> None:
+def save_processed(
+    df: pd.DataFrame,
+    path: Path = PROCESSED_DATA_PATH,
+    filename: str = "olist_processed.parquet",
+) -> None:
     """Salva o dataset final tratado em Parquet, pronto para modelagem."""
     path.mkdir(parents=True, exist_ok=True)
     filepath = path / filename
@@ -372,7 +516,7 @@ def save_processed(df: pd.DataFrame, path: Path = PROCESSED_DATA_PATH, filename:
 # ---------------------------------------------------------------------
 def main():
     tables = load_raw_tables()
-    df_merged = build_merged_dataset(tables, include_geolocation=False)
+    df_merged = build_merged_dataset(tables)
     save_interim(df_merged)
 
     df_clean = clean_merged_dataset(df_merged)
