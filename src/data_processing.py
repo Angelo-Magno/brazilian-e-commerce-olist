@@ -522,16 +522,21 @@ def fix_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def collapse_item_level_to_order_level(df: pd.DataFrame, order_level_cols: list[str]) -> pd.DataFrame:
+# ---------------------------------------------------------------------
+# 4. Agregação para granularidade de pedido e limpeza
+# ---------------------------------------------------------------------
+def collapse_item_level_to_order_level(
+    df: pd.DataFrame, order_level_cols: list[str] = ORDER_LEVEL_COLUMNS
+) -> pd.DataFrame:
     """Agrega as colunas de item para uma linha por order_id."""
 
-    # Falha explícita se alguma coluna de pedido não existir (evita typo silencioso)
+    # Falha explícita se alguma coluna de pedido não existir (evita erro silencioso)
     missing = [col for col in order_level_cols if col not in df.columns]
     if missing:
         raise KeyError(f"Colunas de pedido ausentes no DataFrame: {missing}")
 
     # Colunas de pedido: pegar o primeiro valor (são idênticas dentro do pedido)
-    order_aggs = {col: (col, "first") for col in order_level_cols if col in df.columns}
+    order_aggs = {col: (col, "first") for col in order_level_cols}
 
     def mode_or_nan(s: pd.Series):
         mode = s.mode()
@@ -600,8 +605,29 @@ def collapse_item_level_to_order_level(df: pd.DataFrame, order_level_cols: list[
         )
         .reset_index()
     )
+    logger.info(f"Agregado para granularidade de pedido -> {df_order.shape}")
 
     return df_order
+
+
+def clean_order_level_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove duplicatas exatas e reporta nulos por coluna.
+    Não remove nulos automaticamente: a decisão de imputação fica para
+    a etapa de feature engineering.
+    """
+    df = df.copy()
+
+    before = len(df)
+    df = df.drop_duplicates()
+    logger.info(f"Duplicatas exatas removidas: {before - len(df)}")
+
+    null_report = df.isnull().sum()
+    null_report = null_report[null_report > 0].sort_values(ascending=False)
+    if not null_report.empty:
+        logger.info(f"Colunas com valores nulos:\n{null_report}")
+
+    return df
 
 
 # ---------------------------------------------------------------------
@@ -612,7 +638,7 @@ def save_interim(
     path: Path = INTERIM_DATA_PATH,
     filename: str = "olist_merged.parquet",
 ) -> None:
-    """Salva o dataset unificado (pré-tratamento final) em data/interim/."""
+    """Salva o dataset unificado item-level em data/interim/."""
     path.mkdir(parents=True, exist_ok=True)
     filepath = path / filename
     df.to_parquet(filepath, index=False)
@@ -624,7 +650,7 @@ def save_processed(
     path: Path = PROCESSED_DATA_PATH,
     filename: str = "olist_processed.parquet",
 ) -> None:
-    """Salva o dataset final tratado em Parquet, pronto para modelagem."""
+    """Salva o dataset final (order-level) em Parquet, pronto para modelagem."""
     path.mkdir(parents=True, exist_ok=True)
     filepath = path / filename
     df.to_parquet(filepath, index=False)
@@ -636,10 +662,14 @@ def save_processed(
 # ---------------------------------------------------------------------
 def main():
     tables = load_raw_tables()
-    df_merged = build_merged_dataset(tables)
-    save_interim(df_merged)
 
-    df_clean = clean_merged_dataset(df_merged)
+    df_items = build_merged_dataset(tables)
+    df_items = fix_invalid_values(df_items)
+    df_items = fix_missing_category_translations(df_items)
+    save_interim(df_items)
+
+    df_orders = collapse_item_level_to_order_level(df_items)
+    df_clean = clean_order_level_dataset(df_orders)
     save_processed(df_clean)
 
 
