@@ -287,6 +287,33 @@ def save_table_as_image(
     fig.savefig(filepath, dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
+def check_date_integrity(df: pd.DataFrame, date_order_rule: list[tuple]) -> pd.DataFrame:
+    """Verifica se as datas do pedido seguem a ordem cronológica esperada.
+
+    Retorna um resumo com uma linha por regra, contendo quantas linhas
+    foram checadas e quantas violaram a ordem.
+    """
+    results = []
+
+    for earlier, later in date_order_rule:
+        # Só compara linhas em que as duas datas existem (nulos estruturais são ignorados)
+        both_present = df[earlier].notna() & df[later].notna()
+        violations = both_present & (df[later] < df[earlier])
+
+        checked_rows = int(both_present.sum())
+        violation_count = int(violations.sum())
+
+        results.append(
+            {
+                "rule": f"{earlier} <= {later}",
+                "checked_rows": checked_rows,
+                "violations": violation_count,
+                "violation_pct": round(100 * violation_count / max(checked_rows, 1), 2),
+            }
+        )
+
+    return pd.DataFrame(results)
+
 
 
 if __name__ == "__main__":
