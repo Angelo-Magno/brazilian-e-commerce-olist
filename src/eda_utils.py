@@ -199,49 +199,6 @@ def check_payment_consistency(
     return result
 
 
-def add_seller_customer_distance(
-    df: pd.DataFrame,
-    customer_lat_col: str = "customer_lat",
-    customer_lng_col: str = "customer_lng",
-    seller_lat_col: str = "seller_lat",
-    seller_lng_col: str = "seller_lng",
-) -> pd.DataFrame:
-    """
-    Adiciona a distância (km) entre vendedor e cliente usando a fórmula de haversine.
-    Linhas sem coordenadas em algum dos lados ficam com distância nula (NaN).
-    A distância é uma aproximação: usa o ponto central de cada prefixo de CEP,
-    não o endereço real.
-    """
-    required = [customer_lat_col, customer_lng_col, seller_lat_col, seller_lng_col]
-    missing = [col for col in required if col not in df.columns]
-    if missing:
-        raise KeyError(f"Colunas de coordenadas ausentes no DataFrame: {missing}")
-
-    # Converte para float64 do NumPy (colunas anuláveis do pandas viram NaN)
-    lat1 = np.radians(df[customer_lat_col].to_numpy(dtype="float64", na_value=np.nan))
-    lng1 = np.radians(df[customer_lng_col].to_numpy(dtype="float64", na_value=np.nan))
-    lat2 = np.radians(df[seller_lat_col].to_numpy(dtype="float64", na_value=np.nan))
-    lng2 = np.radians(df[seller_lng_col].to_numpy(dtype="float64", na_value=np.nan))
-
-    # Fórmula de haversine
-    delta_lat = lat2 - lat1
-    delta_lng = lng2 - lng1
-    a = np.sin(delta_lat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(delta_lng / 2) ** 2
-    # clip evita erro numérico quando 'a' passa levemente de 1 por arredondamento
-    distance_km = 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
-
-    df = df.copy()
-    df["seller_customer_distance_km"] = distance_km
-
-    # Flag para pedidos no mesmo prefixo: nesses casos a distância é 0 por construção
-    if {"customer_zip_code_prefix", "seller_zip_code_prefix"}.issubset(df.columns):
-        df["same_zip_prefix"] = (
-            df["customer_zip_code_prefix"] == df["seller_zip_code_prefix"]
-        ).astype("Int8")
-
-    return df
-
-
 def save_table_as_image(
     df,
     filename,
