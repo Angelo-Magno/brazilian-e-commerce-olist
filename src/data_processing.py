@@ -175,6 +175,48 @@ TABLE_SCHEMAS = {
 BRAZIL_LAT_RANGE = (-33.75116944, 5.27438888)
 BRAZIL_LNG_RANGE = (-73.98283055, -34.79314722)
 
+# Raio médio da Terra em km (cálculo da distância aproximada por haversine)
+EARTH_RADIUS_KM = 6371.0
+
+# Ano a partir do qual shipping_limit_date é considerado inválido
+SHIPPING_LIMIT_MAX_VALID_YEAR = 2018
+
+# Traduções ausentes no CSV original de tradução de categorias
+MISSING_CATEGORY_TRANSLATIONS = {
+    "portateis_cozinha_e_preparadores_de_alimentos": "kitchen_portables_and_food_preparators",
+    "pc_gamer": "pc_gamer",
+}
+
+# Colunas que são atributos do pedido (idênticas em todos os itens do mesmo
+# order_id), por isso usamos "first" ao agregar para uma linha por pedido.
+ORDER_LEVEL_COLUMNS = [
+    "customer_id",
+    "order_status",
+    "order_purchase_timestamp",
+    "order_approved_at",
+    "order_delivered_carrier_date",
+    "order_delivered_customer_date",
+    "order_estimated_delivery_date",
+    "customer_unique_id",
+    "customer_zip_code_prefix",
+    "customer_city",
+    "customer_state",
+    "payment_value_total",
+    "payment_installments_max",
+    "payment_sequential_max",
+    "payment_types",
+    "n_payment_methods",
+    "review_id",
+    "review_score",
+    "review_comment_title",
+    "review_comment_message",
+    "review_creation_date",
+    "review_answer_timestamp",
+    "customer_lat",
+    "customer_lng",
+    "customer_geo_n_points"
+]
+
 
 # ---------------------------------------------------------------------
 # 1. Carregamento das tabelas brutas
@@ -415,6 +457,32 @@ def clean_merged_dataset(df: pd.DataFrame) -> pd.DataFrame:
     if not null_report.empty:
         logger.info(f"Colunas com valores nulos:\n{null_report}")
 
+def fix_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Converte valores impossíveis em nulos.
+    Deve ser aplicada no dataset item-level, antes da agregação por pedido,
+    para que somas e máximos não incorporem os valores inválidos.
+    """
+    df = df.copy()
+ 
+    # Datas limite de envio fora do período do dataset
+    invalid_date = df["shipping_limit_date"].dt.year > SHIPPING_LIMIT_MAX_VALID_YEAR
+    df.loc[invalid_date, "shipping_limit_date"] = pd.NaT
+ 
+    # Peso zero ou negativo é impossível
+    invalid_weight = df["product_weight_g"] <= 0
+    df.loc[invalid_weight, "product_weight_g"] = pd.NA
+ 
+    # Número de parcelas zero ou negativo é inválido
+    invalid_installments = df["payment_installments_max"] <= 0
+    df.loc[invalid_installments, "payment_installments_max"] = pd.NA
+ 
+    logger.info(
+        "Valores inválidos tratados | "
+        f"shipping_limit_date: {invalid_date.sum()} | "
+        f"product_weight_g: {invalid_weight.sum()} | "
+        f"payment_installments_max: {invalid_installments.sum()}"
+    )
     return df
 
 
