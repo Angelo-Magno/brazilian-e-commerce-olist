@@ -436,26 +436,21 @@ def build_merged_dataset(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------
-# 4. Limpeza / tratamentos pós-merge (duplicatas, nulos)
-# ---------------------------------------------------------------------
-def clean_merged_dataset(df: pd.DataFrame) -> pd.DataFrame:
+def fix_missing_category_translations(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Remove duplicatas exatas geradas pelos merges e reporta nulos por coluna.
+    Preenche product_category_name_english para categorias que não existem
+    no CSV de tradução original. Deve ser aplicada após merge_products.
+    Só preenche onde a tradução está nula, sem sobrescrever traduções existentes.
     """
     df = df.copy()
+ 
+    manual_translation = df["product_category_name"].map(MISSING_CATEGORY_TRANSLATIONS)
+    mask = df["product_category_name_english"].isna() & manual_translation.notna()
+    df.loc[mask, "product_category_name_english"] = manual_translation[mask]
+ 
+    logger.info(f"Traduções de categoria corrigidas após o merge: {mask.sum()}")
+    return df
 
-    # Remove duplicatas exatas (linha inteira repetida)
-    before = len(df)
-    df = df.drop_duplicates()
-    logger.info(f"Duplicatas exatas removidas: {before - len(df)}")
-
-    # Relatório de nulos (apenas log, não remove nada automaticamente --
-    # decisão de imputação/remoção fica para a etapa de feature engineering)
-    null_report = df.isnull().sum()
-    null_report = null_report[null_report > 0].sort_values(ascending=False)
-    if not null_report.empty:
-        logger.info(f"Colunas com valores nulos:\n{null_report}")
 
 def fix_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
     """
