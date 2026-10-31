@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 
+FIGURES_PATH = Path("../reports/figures")
 EARTH_RADIUS_KM = 6371.0088  # raio médio da Terra
 
 
@@ -140,7 +142,7 @@ def show_multi_item_orders(
 def check_payment_consistency(
     df: pd.DataFrame,
     order_id_col: str = "order_id",
-    tolerance: float = 0.02,
+    tolerance: float = 0.01,
 ) -> pd.DataFrame:
     """
     Verifica se a soma de price + freight_value por pedido bate com
@@ -242,7 +244,8 @@ def add_seller_customer_distance(
 
 def save_table_as_image(
     df,
-    filepath,
+    filename,
+    filepath=FIGURES_PATH,
     title=None,
     header_color="#2C3E50",
     header_text_color="white",
@@ -323,6 +326,7 @@ def save_table_as_image(
         ax.set_title(title, fontsize=font_size + 4, weight="bold",
                      color=header_color, pad=12)
 
+    filepath = filepath / filename
     fig.savefig(filepath, dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
