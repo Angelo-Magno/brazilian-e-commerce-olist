@@ -413,16 +413,56 @@ def merge_geolocation(df: pd.DataFrame, geolocation: pd.DataFrame) -> pd.DataFra
     return df
 
 
+def haversine_km(
+    lat1: pd.Series, lng1: pd.Series, lat2: pd.Series, lng2: pd.Series
+) -> pd.Series:
+    """
+    Calcula a distância aproximada em km entre dois pontos (fórmula de haversine).
+    Funciona com Series do pandas e propaga NaN quando alguma coordenada falta.
+    """
+    lat1, lng1, lat2, lng2 = (
+        np.radians(lat1.astype("float64")),
+        np.radians(lng1.astype("float64")),
+        np.radians(lat2.astype("float64")),
+        np.radians(lng2.astype("float64")),
+    )
+    d_lat = lat2 - lat1
+    d_lng = lng2 - lng1
+    a = np.sin(d_lat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(d_lng / 2) ** 2
+    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(a))
+
+
+def add_seller_customer_distance(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adiciona seller_customer_distance_km, a distância aproximada entre o
+    vendedor e o cliente. Deve ser chamada depois de merge_geolocation.
+    """
+    df = df.assign(
+        seller_customer_distance_km=haversine_km(
+            df["seller_lat"], df["seller_lng"], df["customer_lat"], df["customer_lng"]
+        )
+    )
+    
+    # Flag para pedidos no mesmo prefixo: nesses casos a distância é 0 por construção
+    if {"customer_zip_code_prefix", "seller_zip_code_prefix"}.issubset(df.columns):
+        df["same_zip_prefix"] = (
+            df["customer_zip_code_prefix"] == df["seller_zip_code_prefix"]
+        ).astype("Int8")
+
+    logger.info("Distância vendedor-cliente calculada.")
+    return df
+
+
 # ---------------------------------------------------------------------
 # 3. Pipeline principal de merge
 # ---------------------------------------------------------------------
 def build_merged_dataset(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
-    Orquestra todos os merges na ordem correta e retorna o dataset unificado.
-    Este é o dataset que vai para data/interim/.
+    Orquestra todos os merges na ordem correta e retorna o dataset unificado
+    na granularidade de item. Este é o dataset que vai para data/interim/.
 
     Ordem: orders -> customers -> order_items -> products -> sellers
-           -> payments -> reviews -> (geolocation, opcional)
+           -> payments -> reviews -> geolocation -> distância
     """
     df = merge_orders_customers(tables["orders"], tables["customers"])
     df = merge_order_items(df, tables["order_items"])
@@ -431,8 +471,9 @@ def build_merged_dataset(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     df = merge_payments(df, tables["payments"])
     df = merge_reviews(df, tables["reviews"])
     df = merge_geolocation(df, tables["geolocation"])
+    df = add_seller_customer_distance(df)
 
-    logger.info(f"Dataset final unificado: {df.shape}")
+    logger.info(f"Dataset item-level unificado: {df.shape}")
     return df
 
 
