@@ -3,10 +3,12 @@ data_processing.py
 
 Módulo responsável por carregar, unir (merge) e preparar as 9 tabelas
 do dataset Olist Brazilian E-Commerce, gerando um dataset consolidado
-pronto para EDA e feature engineering.
+na granularidade de pedido (uma linha por order_id), pronto para EDA
+e feature engineering.
 
 Fluxo geral:
-    raw/ (9 CSVs) -> merge -> interim/ (dataset unificado) -> processed/ (tratado, Parquet)
+    raw/ (9 CSVs) -> merge -> interim/ (item-level unificado)
+                  -> agregação por pedido -> processed/ (order-level, Parquet)
 
 Nomes de arquivo assumidos em data/raw/ (padrão do Kaggle):
     - olist_customers_dataset.csv
@@ -23,6 +25,7 @@ Nomes de arquivo assumidos em data/raw/ (padrão do Kaggle):
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 logging.basicConfig(
@@ -50,6 +53,16 @@ RAW_FILENAMES = {
 }
 
 # ---------------------------------------------------------------------
+# Renomeação de colunas com grafia errada no CSV original
+# ---------------------------------------------------------------------
+# O Olist grava "lenght" (com erro de digitação) nos CSVs. Corrigimos o nome
+# logo após a leitura, para que todo o restante do código use um único nome.
+COLUMN_RENAMES = {
+    "product_name_lenght": "product_name_length",
+    "product_description_lenght": "product_description_length",
+}
+
+# ---------------------------------------------------------------------
 # Esquema de tipos por tabela (aplicado direto no read_csv)
 # ---------------------------------------------------------------------
 # Regras adotadas:
@@ -58,6 +71,7 @@ RAW_FILENAMES = {
 #   - Inteiros com possíveis nulos: dtype anulável ("Int16", "Int32").
 #   - Datas: listadas em "parse_dates" (nulos viram NaT, esperado em pedidos
 #     cancelados ou não entregues).
+# Atenção: as chaves de "dtype" devem ser exatamente os nomes do CSV original.
 TABLE_SCHEMAS = {
     "customers": {
         "dtype": {
@@ -118,7 +132,7 @@ TABLE_SCHEMAS = {
         "dtype": {
             "product_id": "string",
             "product_category_name": "string",
-            # Os nomes abaixo mantêm a grafia original do dataset ("lenght")
+            # Grafia original do CSV ("lenght"); renomeada após a leitura
             "product_name_lenght": "Int16",
             "product_description_lenght": "Int32",
             "product_photos_qty": "Int16",
@@ -168,7 +182,7 @@ BRAZIL_LNG_RANGE = (-73.98283055, -34.79314722)
 def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
     """
     Carrega os 9 CSVs originais do Olist em um dicionário de DataFrames,
-    já com os tipos corretos (dtype e parse_dates definidos em TABLE_SCHEMAS).
+    já com os tipos corretos e com as colunas renomeadas (COLUMN_RENAMES).
 
     Se alguma coluna não puder ser convertida, o erro aparece aqui, na carga,
     e não depois dos merges.
@@ -184,11 +198,13 @@ def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
             raise FileNotFoundError(f"Arquivo não encontrado: {filepath}")
         schema = TABLE_SCHEMAS[key]
         logger.info(f"Carregando {key} de {filepath}")
-        tables[key] = pd.read_csv(
+        df = pd.read_csv(
             filepath,
             dtype=schema["dtype"],
             parse_dates=schema["parse_dates"],
         )
+        # Padroniza nomes com erro de digitação do dataset original
+        tables[key] = df.rename(columns=COLUMN_RENAMES)
     return tables
 
 
@@ -198,7 +214,7 @@ def load_raw_tables(raw_path: Path = RAW_DATA_PATH) -> dict[str, pd.DataFrame]:
 def merge_orders_customers(
     orders: pd.DataFrame, customers: pd.DataFrame
 ) -> pd.DataFrame:
-    """Une orders + customers via customer_id (relação 1:1)."""
+    """Une orders + customers via customer_id (relação m:1)."""
     df = orders.merge(customers, on="customer_id", how="left", validate="m:1")
     logger.info(f"orders + customers -> {df.shape}")
     return df
@@ -330,7 +346,7 @@ def merge_geolocation(df: pd.DataFrame, geolocation: pd.DataFrame) -> pd.DataFra
     geo_agg = aggregate_geolocation(geolocation)
 
     for role in ("customer", "seller"):
-        # Renomeia as colunas da geolocalização para evitar colisão entre os dois merges
+        # Renomeia as colunas para evitar colisão entre os dois merges
         geo_role = geo_agg.rename(
             columns={
                 "zip_code_prefix": f"{role}_zip_code_prefix",
@@ -439,7 +455,7 @@ def collapse_item_level_to_order_level(df: pd.DataFrame, order_level_cols: list[
         "min_shipping_limit_date": ("shipping_limit_date", "min"),
         "total_price": ("price", sum_or_nan),
         "max_item_price": ("price", "max"),
-        "avg_item_price": ("price", "mean"),
+        "mean_item_price": ("price", "mean"),
         "total_freight": ("freight_value", sum_or_nan),
         "main_category": ("product_category_name_english", mode_or_nan),
         "n_categories": ("product_category_name_english", "nunique"),
