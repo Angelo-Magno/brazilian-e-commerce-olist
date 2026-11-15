@@ -214,7 +214,20 @@ ORDER_LEVEL_COLUMNS = [
     "review_answer_timestamp",
     "customer_lat",
     "customer_lng",
-    "customer_geo_n_points"
+    "customer_geo_n_points",
+]
+
+# Pares ordenados de valores para checagem de integridade das variáveis do tipo data
+DATE_ORDER_RULE = [
+    ("order_purchase_timestamp", "order_approved_at"),
+    ("order_purchase_timestamp", "order_delivered_carrier_date"),
+    ("order_purchase_timestamp", "order_delivered_customer_date"),
+    ("order_purchase_timestamp", "order_estimated_delivery_date"),
+    ("order_purchase_timestamp", "max_shipping_limit_date"),
+    ("order_approved_at", "order_delivered_carrier_date"),
+    ("order_approved_at", "order_estimated_delivery_date"),
+    ("order_approved_at", "order_delivered_customer_date"),
+    ("order_delivered_carrier_date", "order_delivered_customer_date"),
 ]
 
 
@@ -442,7 +455,7 @@ def add_seller_customer_distance(df: pd.DataFrame) -> pd.DataFrame:
             df["seller_lat"], df["seller_lng"], df["customer_lat"], df["customer_lng"]
         )
     )
-    
+
     # Flag para pedidos no mesmo prefixo: nesses casos a distância é 0 por construção
     if {"customer_zip_code_prefix", "seller_zip_code_prefix"}.issubset(df.columns):
         df["same_zip_prefix"] = (
@@ -477,6 +490,9 @@ def build_merged_dataset(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------
+# 4. Agregação para granularidade de pedido e limpeza
+# ---------------------------------------------------------------------
 def fix_missing_category_translations(df: pd.DataFrame) -> pd.DataFrame:
     """
     Preenche product_category_name_english para categorias que não existem
@@ -484,11 +500,11 @@ def fix_missing_category_translations(df: pd.DataFrame) -> pd.DataFrame:
     Só preenche onde a tradução está nula, sem sobrescrever traduções existentes.
     """
     df = df.copy()
- 
+
     manual_translation = df["product_category_name"].map(MISSING_CATEGORY_TRANSLATIONS)
     mask = df["product_category_name_english"].isna() & manual_translation.notna()
     df.loc[mask, "product_category_name_english"] = manual_translation[mask]
- 
+
     logger.info(f"Traduções de categoria corrigidas após o merge: {mask.sum()}")
     return df
 
@@ -500,19 +516,19 @@ def fix_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
     para que somas e máximos não incorporem os valores inválidos.
     """
     df = df.copy()
- 
+
     # Datas limite de envio fora do período do dataset
     invalid_date = df["shipping_limit_date"].dt.year > SHIPPING_LIMIT_MAX_VALID_YEAR
     df.loc[invalid_date, "shipping_limit_date"] = pd.NaT
- 
+
     # Peso zero ou negativo é impossível
     invalid_weight = df["product_weight_g"] <= 0
     df.loc[invalid_weight, "product_weight_g"] = pd.NA
- 
+
     # Número de parcelas zero ou negativo é inválido
     invalid_installments = df["payment_installments_max"] <= 0
     df.loc[invalid_installments, "payment_installments_max"] = pd.NA
- 
+
     logger.info(
         "Valores inválidos tratados | "
         f"shipping_limit_date: {invalid_date.sum()} | "
@@ -522,9 +538,6 @@ def fix_invalid_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------
-# 4. Agregação para granularidade de pedido e limpeza
-# ---------------------------------------------------------------------
 def collapse_item_level_to_order_level(
     df: pd.DataFrame, order_level_cols: list[str] = ORDER_LEVEL_COLUMNS
 ) -> pd.DataFrame:
@@ -610,6 +623,35 @@ def collapse_item_level_to_order_level(
     return df_order
 
 
+def add_flag_has_temporal_inconsistency(
+    df: pd.DataFrame, date_order_rule: list[tuple] = DATE_ORDER_RULE
+) -> pd.DataFrame:
+    has_temporal_inconsistency = pd.Series(False, index=df.index)
+
+    for earlier, later in date_order_rule:
+        mask = (df[earlier].notna() & df[later].notna()) & (df[later] < df[earlier])
+        has_temporal_inconsistency = has_temporal_inconsistency | mask
+
+    df["has_temporal_inconsistency"] = has_temporal_inconsistency.astype("Int8")
+
+    return df
+
+
+def remove_temporal_inconsistency(df: pd.DataFrame) -> pd.DataFrame:
+    date_order_rule = [
+        ("order_approved_at", "order_estimated_delivery_date"),
+        ("order_approved_at", "order_delivered_customer_date"),
+    ]
+
+    for earlier, later in date_order_rule:
+        mask = (df[earlier].notna() & df[later].notna()) & (df[later] < df[earlier])
+        df.drop(mask, inplace=True)
+
+    df.reset_index()
+
+    return df
+
+
 def clean_order_level_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """
     Remove duplicatas exatas e reporta nulos por coluna.
@@ -669,6 +711,8 @@ def main():
     save_interim(df_items)
 
     df_orders = collapse_item_level_to_order_level(df_items)
+    df_orders = add_flag_has_temporal_inconsistency(df_orders)
+    df_orders = remove_temporal_inconsistency(df_orders)
     df_clean = clean_order_level_dataset(df_orders)
     save_processed(df_clean)
 
