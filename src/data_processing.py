@@ -633,6 +633,7 @@ def add_flag_has_temporal_inconsistency(
         has_temporal_inconsistency = has_temporal_inconsistency | mask
 
     df["has_temporal_inconsistency"] = has_temporal_inconsistency.astype("Int8")
+    logger.info(f"Adicionada flag has_temporal_inconsistency -> {df.shape}")
 
     return df
 
@@ -643,11 +644,15 @@ def remove_temporal_inconsistency(df: pd.DataFrame) -> pd.DataFrame:
         ("order_approved_at", "order_delivered_customer_date"),
     ]
 
+    inconsistencies = 0
     for earlier, later in date_order_rule:
         mask = (df[earlier].notna() & df[later].notna()) & (df[later] < df[earlier])
-        df.drop(mask, inplace=True)
+        df.drop(df[mask].index, inplace=True)
 
-    df.reset_index()
+    inconsistencies += mask.sum()
+
+    df.reset_index(drop=True)
+    logger.info(f"Inconsitências temporais removidos: {inconsistencies}")
 
     return df
 
