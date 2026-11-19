@@ -100,7 +100,7 @@ TABLE_SCHEMAS = {
     "order_items": {
         "dtype": {
             "order_id": "string",
-            "order_item_id": "Int16",
+            "order_item_id": "string",
             "product_id": "string",
             "seller_id": "string",
             "price": "float64",
@@ -136,10 +136,10 @@ TABLE_SCHEMAS = {
             "product_name_lenght": "Int16",
             "product_description_lenght": "Int32",
             "product_photos_qty": "Int16",
-            "product_weight_g": "Int32",
-            "product_length_cm": "Int32",
-            "product_height_cm": "Int32",
-            "product_width_cm": "Int32",
+            "product_weight_g": "float64",
+            "product_length_cm": "float64",
+            "product_height_cm": "float64",
+            "product_width_cm": "float64",
         },
         "parse_dates": [],
     },
