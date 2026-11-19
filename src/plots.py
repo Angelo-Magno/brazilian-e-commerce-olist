@@ -18,12 +18,14 @@ Design principles:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Callable, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import math
+from sklearn.metrics import average_precision_score, precision_recall_curve, confusion_matrix, roc_auc_score, roc_curve
 
 # Paleta padrão do projeto (consistência visual entre todos os notebooks)
 DEFAULT_COLOR = "#4C72B0"
@@ -49,6 +51,70 @@ def _save_if_needed(fig: plt.Figure, save_path: Optional[str | Path]) -> None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+
+def plot_grid(
+    plot_func: Callable[..., plt.Axes],
+    items: Sequence[Any],
+    param_name: str = "column",
+    n_cols: int = 3,
+    cell_size: tuple[float, float] = (6, 4),
+    suptitle: Optional[str] = None,
+    save_path: Optional[str | Path] = None,
+    **plot_kwargs: Any,
+) -> tuple[plt.Figure, np.ndarray]:
+    """
+    Exibe vários gráficos em grade, chamando `plot_func` uma vez para cada
+    valor em `items`.
+
+    plot_func: função de plotagem existente que aceite o argumento `ax`
+               (ex: plot_numeric_distribution, plot_categorical_counts).
+    items: valores que variam entre os gráficos (ex: lista de colunas).
+    param_name: nome do parâmetro de `plot_func` que recebe cada item
+                (ex: "column" para plot_numeric_distribution,
+                "category_col" para plot_risk_rate_by_category).
+    n_cols: número de colunas da grade; as linhas são calculadas automaticamente.
+    cell_size: (largura, altura) de cada célula da grade, em polegadas.
+    suptitle: título geral opcional da figura.
+    save_path: caminho para salvar a figura inteira (a grade, não cada gráfico).
+    plot_kwargs: argumentos fixos repassados a todas as chamadas
+                 (ex: bins=30, log_scale=True, df=df).
+
+    Retorna a Figure e o array 2D de Axes (células sobrando ficam ocultas).
+    """
+    # ax e save_path são controlados pela grade, não pelo usuário
+    reserved = {"ax", "save_path"} & set(plot_kwargs)
+    if reserved:
+        raise ValueError(f"Argumentos controlados por plot_grid: {sorted(reserved)}")
+
+    n_items = len(items)
+    if n_items == 0:
+        raise ValueError("`items` não pode ser vazio.")
+
+    n_cols = min(n_cols, n_items)
+    n_rows = math.ceil(n_items / n_cols)
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(n_cols * cell_size[0], n_rows * cell_size[1]),
+        squeeze=False,  # garante sempre um array 2D, mesmo com 1 linha/coluna
+    )
+    flat_axes = axes.ravel()
+
+    for ax, item in zip(flat_axes, items):
+        plot_func(ax=ax, **{param_name: item}, **plot_kwargs)
+
+    # Oculta as células vazias da última linha
+    for ax in flat_axes[n_items:]:
+        ax.set_visible(False)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=14, y=0.98)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    _save_if_needed(fig, save_path)
+    return fig, axes
 
 
 def plot_target_balance(
@@ -372,7 +438,6 @@ def plot_confusion_matrix(
     Matriz de confusão para avaliação dos modelos de classificação binária
     (Risco de Atraso / Risco de Review Ruim).
     """
-    from sklearn.metrics import confusion_matrix
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 5))
@@ -408,7 +473,6 @@ def plot_precision_recall_curve(
     Curva Precision-Recall com PR-AUC anotado — métrica preferida do projeto
     para lidar com o desbalanceamento da classe de risco (minoritária).
     """
-    from sklearn.metrics import average_precision_score, precision_recall_curve
 
     if ax is None:
         fig, ax = plt.subplots(figsize=FIGSIZE_DEFAULT)
@@ -437,7 +501,6 @@ def plot_roc_curve(
     """
     Curva ROC com ROC-AUC anotado.
     """
-    from sklearn.metrics import roc_auc_score, roc_curve
 
     if ax is None:
         fig, ax = plt.subplots(figsize=FIGSIZE_DEFAULT)
